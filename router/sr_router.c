@@ -13,6 +13,8 @@
 
 #include <stdio.h>
 #include <assert.h>
+#include <string.h>
+#include <stdlib.h>
 
 
 #include "sr_if.h"
@@ -66,6 +68,131 @@ void sr_init(struct sr_instance* sr)
  *
  *---------------------------------------------------------------------*/
 
+
+uint8_t* construct_arp_reply_packet(struct sr_if* iface, 
+                                    struct sr_ethernet_hdr* eth_hdr, 
+                                    struct sr_arp_hdr* arp_hdr) 
+{
+
+    uint8_t* reply_packet = malloc(sizeof(struct sr_ethernet_hdr) + sizeof(struct sr_arp_hdr));
+    if (!reply_packet) {
+        perror("malloc failed");
+        return NULL;
+    }
+
+    struct sr_ethernet_hdr* reply_eth_hdr = (struct sr_ethernet_hdr*) reply_packet;
+    struct sr_arp_hdr* reply_arp_hdr = (struct sr_arp_hdr*)(reply_packet + sizeof(struct sr_ethernet_hdr));
+
+    memcpy(reply_eth_hdr->ether_dhost, eth_hdr->ether_shost, ETHER_ADDR_LEN);
+    memcpy(reply_eth_hdr->ether_shost, iface->addr, ETHER_ADDR_LEN);
+    reply_eth_hdr->ether_type = htons(ethertype_arp);
+
+    reply_arp_hdr->ar_hrd = htons(arp_hrd_ethernet);
+    reply_arp_hdr->ar_pro = htons(ethertype_ip);
+    reply_arp_hdr->ar_hln = ETHER_ADDR_LEN;
+    reply_arp_hdr->ar_pln = 4;
+    reply_arp_hdr->ar_op  = htons(arp_op_reply);
+    memcpy(reply_arp_hdr->ar_sha, iface->addr, ETHER_ADDR_LEN);
+    reply_arp_hdr->ar_sip = iface->ip;
+    memcpy(reply_arp_hdr->ar_tha, arp_hdr->ar_sha, ETHER_ADDR_LEN);
+    reply_arp_hdr->ar_tip = arp_hdr->ar_sip;
+
+    return reply_packet; 
+}
+void handle_arp_packet(struct sr_instance* sr,
+        uint8_t * packet/* lent */,
+        unsigned int len,
+        char* interface/* lent */) {
+   
+    struct sr_ethernet_hdr* eth_hdr = (struct sr_ethernet_hdr*) packet;
+    struct sr_arp_hdr* arp_hdr = (struct sr_arp_hdr*)(packet + sizeof(struct sr_ethernet_hdr));
+    size_t packet_size = sizeof(struct sr_ethernet_hdr) + sizeof(struct sr_arp_hdr);
+
+    if (len < packet_size) {
+        printf("ARP packet too short\n");
+        return;
+    }
+
+    if (ntohs(arp_hdr->ar_op) == arp_op_request) {
+        printf("Handling ARP request\n");
+        
+        struct sr_if* head = sr->if_list;
+        while (head) {
+            if (head->ip == arp_hdr->ar_tip) {
+                break;
+            }
+            head = head->next;
+        }
+
+        if (!head) {
+            printf("no matching interface)\n");
+            return;
+        }
+
+        uint8_t* reply_packet = construct_arp_reply_packet(head, eth_hdr, arp_hdr);
+        sr_send_packet(sr, reply_packet, packet_size, interface);
+        free(reply_packet);
+        printf("succesfully Sent ARP reply in ARP Request\n");
+    } else if (ntohs(arp_hdr->ar_op) == arp_op_reply) {
+        printf("Handling ARP reply\n");
+    } else {
+        printf("Unknown ARP operation: %d\n", ntohs(arp_hdr->ar_op));
+    }
+}
+
+struct sr_rt* longest_prefix_match(struct sr_instance* sr, uint32_t dest_ip) {
+    struct sr_rt* best_match = NULL;
+    struct sr_rt* rt_entry = sr->routing_table;
+    uint32_t longest_mask = 0;
+
+    while (rt_entry) {
+        if ((dest_ip & rt_entry->mask.s_addr) == (rt_entry->dest.s_addr & rt_entry->mask.s_addr)) {
+            // Check if this mask is longer (more specific)
+            if (ntohl(rt_entry->mask.s_addr) > ntohl(longest_mask)) {
+                best_match = rt_entry;
+                longest_mask = rt_entry->mask.s_addr;
+            }
+        }
+        rt_entry = rt_entry->next;
+    }
+
+    return best_match;
+}
+
+void handle_ip_packet(struct sr_instance* sr,
+        uint8_t * packet/* lent */,
+        unsigned int len,
+        char* interface/* lent */) {
+    /* Handle IP packet */
+    
+    sr_ip_hdr_t* ip_hdr = (sr_ip_hdr_t*)(packet + sizeof(struct sr_ethernet_hdr));
+    uint16_t received_sum = ntohs(ip_hdr->ip_sum);
+    ip_hdr->ip_sum = 0;
+    ip_hdr->ip_sum = cksum((uint16_t*)ip_hdr, ip_hdr->ip_hl * 4);
+    if (len < sizeof(struct sr_ethernet_hdr) + sizeof(sr_ip_hdr_t)) {
+        printf("IP packet too short\n");
+        return;
+    }
+    if (received_sum != ntohs(ip_hdr->ip_sum)) {
+        printf("Invalid IP checksum\n");
+        return;
+    }
+
+    ip_hdr->ttr -= 1;
+    /* TODO: ttr reaches 0 or something*/
+    if (ip_hdr->ttr == 0) {
+        printf("TTL expired, need to send ICMP Time Exceeded\n");
+        return;
+    }
+
+    ip_hdr->ip_sum = 0;
+    ip_hdr->ip_sum = cksum((uint16_t*)ip_hdr, ip_hdr->ip_hl * 4);
+    struct sr_rt* rt_entry = longest_prefix_match(sr, ip_hdr->ip_dst);
+    
+
+    printf("IP packet passed checksum validation\n");
+}
+
 void sr_handlepacket(struct sr_instance* sr,
         uint8_t * packet/* lent */,
         unsigned int len,
@@ -77,6 +204,28 @@ void sr_handlepacket(struct sr_instance* sr,
   assert(interface);
 
   printf("*** -> Received packet of length %d \n",len);
+
+  sr_ethernet_hdr_t* eth_hdr = (sr_ethernet_hdr_t*) packet;
+  uint16_t type = ntohs(eth_hdr->ether_type);
+
+  switch(type) {
+      case ethertype_arp:
+          printf("Received ARP packet\n");
+          /* trying to find the truth  */
+          /* handle ARP */
+          handle_arp_packet(sr, packet, len, interface);
+          break;
+      case ethertype_ip:
+          printf("Received IP packet\n");
+          /* handle IP */
+          handle_ip_packet(sr, packet, len, interface);
+          break;
+      default:
+          printf("Received packet of unknown type %d\n", type);
+          return;
+  }
+
+
 
   /* fill in code here */
 
