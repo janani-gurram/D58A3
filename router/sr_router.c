@@ -146,8 +146,9 @@ struct sr_rt* longest_prefix_match(struct sr_instance* sr, uint32_t dest_ip) {
     uint32_t longest_mask = 0;
 
     while (rt_entry) {
+        /* bitwise AND to check if the destination IP matches the route entry   */  
         if ((dest_ip & rt_entry->mask.s_addr) == (rt_entry->dest.s_addr & rt_entry->mask.s_addr)) {
-            // Check if this mask is longer (more specific)
+            /* Check if this mask is longer (more specific) */
             if (ntohl(rt_entry->mask.s_addr) > ntohl(longest_mask)) {
                 best_match = rt_entry;
                 longest_mask = rt_entry->mask.s_addr;
@@ -159,6 +160,41 @@ struct sr_rt* longest_prefix_match(struct sr_instance* sr, uint32_t dest_ip) {
     return best_match;
 }
 
+int is_interface_ip(struct sr_instance* sr, uint32_t ip) {
+    struct sr_if* iface = sr->if_list;
+    while (iface) {
+        if (iface->ip == ip) {
+            return 1; 
+        }
+        iface = iface->next;
+    }
+    return 0;
+}      
+
+void forward_ip_packet(struct sr_instance* sr,
+        uint8_t * packet/* lent */,
+        unsigned int len,
+        char* interface,/* lent */
+        sr_ip_hdr_t* ip_hdr
+    ) {
+    /* Forward IP packet */
+
+    /*
+    ip_hdr->ttr -= 1;
+    if (ip_hdr->ttr == 0) {
+        printf("TTL expired, need to send ICMP Time Exceeded\n");
+        return;
+    }
+    TODO: ttr reaches 0 or something
+    */
+ 
+
+    ip_hdr->ip_sum = 0;
+    ip_hdr->ip_sum = cksum((uint16_t*)ip_hdr, ip_hdr->ip_hl * 4);
+    struct sr_rt* rt_entry = longest_prefix_match(sr, ip_hdr->ip_dst);
+
+}
+
 void handle_ip_packet(struct sr_instance* sr,
         uint8_t * packet/* lent */,
         unsigned int len,
@@ -167,8 +203,11 @@ void handle_ip_packet(struct sr_instance* sr,
     
     sr_ip_hdr_t* ip_hdr = (sr_ip_hdr_t*)(packet + sizeof(struct sr_ethernet_hdr));
     uint16_t received_sum = ntohs(ip_hdr->ip_sum);
+    int ip_header_len = ip_hdr->ip_hl * 4;
     ip_hdr->ip_sum = 0;
-    ip_hdr->ip_sum = cksum((uint16_t*)ip_hdr, ip_hdr->ip_hl * 4);
+    ip_hdr->ip_sum = cksum((uint16_t*)ip_hdr, ip_header_len);
+
+    /* TODO: icmp send back or something incase of error */
     if (len < sizeof(struct sr_ethernet_hdr) + sizeof(sr_ip_hdr_t)) {
         printf("IP packet too short\n");
         return;
@@ -176,21 +215,30 @@ void handle_ip_packet(struct sr_instance* sr,
     if (received_sum != ntohs(ip_hdr->ip_sum)) {
         printf("Invalid IP checksum\n");
         return;
-    }
+    }   
 
-    ip_hdr->ttr -= 1;
-    /* TODO: ttr reaches 0 or something*/
-    if (ip_hdr->ttr == 0) {
-        printf("TTL expired, need to send ICMP Time Exceeded\n");
+    printf("IP packet passed checksum validation\n");
+
+    if (!is_interface_ip(sr, ip_hdr->ip_dst)) {
+        forward_ip_packet(sr, packet, len, interface, ip_hdr);
         return;
     }
 
-    ip_hdr->ip_sum = 0;
-    ip_hdr->ip_sum = cksum((uint16_t*)ip_hdr, ip_hdr->ip_hl * 4);
-    struct sr_rt* rt_entry = longest_prefix_match(sr, ip_hdr->ip_dst);
-    
+    if (ip_hdr->ip_p == ip_protocol_icmp) {
+        /* I think this is wrong */
+        struct sr_icmp_hdr* icmp_hdr = (struct icmp_hdr*)((uint8_t*)ip_hdr + ip_header_len);
+        if (icmp_hdr->icmp_type != ICMP_ECHO_REPLY) { 
+            return;
+        } 
+        printf("ICMP Echo Request received\n");
+        /* TODO: send an echo reply to the sending host*/
+    }
+    else if (ip_hdr->ip_p == PROTOCOL_TCP || ip_hdr->ip_p == PROTOCOL_UDP) {
+        printf("TCP/UDP packet received for us, need to send ICMP Port Unreachable\n");
+        /* TODO: send an ICMP unreachable */
+    }
 
-    printf("IP packet passed checksum validation\n");
+    return;
 }
 
 void sr_handlepacket(struct sr_instance* sr,

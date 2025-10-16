@@ -87,6 +87,23 @@ struct sr_icmp_hdr {
 } __attribute__ ((packed)) ;
 typedef struct sr_icmp_hdr sr_icmp_hdr_t;
 
+/* ICMP Types */
+#define ICMP_ECHO_REPLY        0   /* Echo Reply (ping response) */
+#define ICMP_DEST_UNREACH      3   /* Destination Unreachable */
+#define ICMP_TIME_EXCEEDED     11  /* Time Exceeded */
+
+/* ICMP Codes for Destination Unreachable (Type 3) */
+#define ICMP_NET_UNREACH       0   /* Destination net unreachable */
+#define ICMP_HOST_UNREACH      1   /* Destination host unreachable */
+#define ICMP_PORT_UNREACH      3   /* Port unreachable */
+
+/* ICMP Codes for Time Exceeded (Type 11) */
+#define ICMP_TTL_EXPIRED       0   /* TTL expired in transit */
+
+/* I believe these are the correct numbers*/
+#define PROTOCOL_TCP 6
+#define PROTOCOL_UDP 17
+
 
 /* Structure of a type3 ICMP header
  */
