@@ -1,5 +1,6 @@
 {
     "files.associations": {
-        "sr_if.h": "c"
+        "sr_if.h": "c",
+        "sr_router.h": "c"
     }
 }

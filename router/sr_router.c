@@ -99,6 +99,34 @@ uint8_t* construct_arp_reply_packet(struct sr_if* iface,
 
     return reply_packet; 
 }
+
+uint8_t* construct_arp_request_packet(struct sr_if* iface, uint32_t target_ip) {
+    uint8_t* packet = malloc(sizeof(struct sr_ethernet_hdr) + sizeof(struct sr_arp_hdr));
+    if (!packet) {
+        perror("malloc failed");
+        return NULL;
+    }
+
+    struct sr_ethernet_hdr* eth_hdr = (struct sr_ethernet_hdr*) packet;
+    struct sr_arp_hdr* arp_hdr = (struct sr_arp_hdr*)(packet + sizeof(struct sr_ethernet_hdr));
+
+    memset(eth_hdr->ether_dhost, 0xff, ETHER_ADDR_LEN);
+    memcpy(eth_hdr->ether_shost, iface->addr, ETHER_ADDR_LEN);
+    eth_hdr->ether_type = htons(ethertype_arp);
+
+    arp_hdr->ar_hrd = htons(arp_hrd_ethernet);
+    arp_hdr->ar_pro = htons(ethertype_ip);
+    arp_hdr->ar_hln = ETHER_ADDR_LEN;
+    arp_hdr->ar_pln = 4;
+    arp_hdr->ar_op  = htons(arp_op_request);
+    memcpy(arp_hdr->ar_sha, iface->addr, ETHER_ADDR_LEN);
+    arp_hdr->ar_sip = iface->ip;
+    memset(arp_hdr->ar_tha, 0x00, ETHER_ADDR_LEN); 
+    arp_hdr->ar_tip = target_ip;
+
+    return packet;
+}
+
 void handle_arp_packet(struct sr_instance* sr,
         uint8_t * packet/* lent */,
         unsigned int len,
@@ -140,6 +168,10 @@ void handle_arp_packet(struct sr_instance* sr,
     }
 }
 
+int same_subnet(uint32_t ip1, uint32_t ip2, uint32_t mask) {
+    return (ip1 & mask) == (ip2 & mask);
+}
+
 struct sr_rt* longest_prefix_match(struct sr_instance* sr, uint32_t dest_ip) {
     struct sr_rt* best_match = NULL;
     struct sr_rt* rt_entry = sr->routing_table;
@@ -147,7 +179,7 @@ struct sr_rt* longest_prefix_match(struct sr_instance* sr, uint32_t dest_ip) {
 
     while (rt_entry) {
         /* bitwise AND to check if the destination IP matches the route entry   */  
-        if ((dest_ip & rt_entry->mask.s_addr) == (rt_entry->dest.s_addr & rt_entry->mask.s_addr)) {
+        if (same_subnet(dest_ip, rt_entry->dest.s_addr, rt_entry->mask.s_addr)) {
             /* Check if this mask is longer (more specific) */
             if (ntohl(rt_entry->mask.s_addr) > ntohl(longest_mask)) {
                 best_match = rt_entry;
@@ -179,19 +211,48 @@ void forward_ip_packet(struct sr_instance* sr,
     ) {
     /* Forward IP packet */
 
-    /*
-    ip_hdr->ttr -= 1;
-    if (ip_hdr->ttr == 0) {
+   
+    ip_hdr->ip_ttl -= 1;
+    if (ip_hdr->ip_ttl == 0) {
         printf("TTL expired, need to send ICMP Time Exceeded\n");
         return;
     }
+     /*
     TODO: ttr reaches 0 or something
     */
  
-
     ip_hdr->ip_sum = 0;
     ip_hdr->ip_sum = cksum((uint16_t*)ip_hdr, ip_hdr->ip_hl * 4);
     struct sr_rt* rt_entry = longest_prefix_match(sr, ip_hdr->ip_dst);
+
+    if (!rt_entry) {
+        printf("No matching route, need to send ICMP Net Unreachable\n");
+        return;
+    }
+
+    uint32_t next_hop_ip;
+    struct sr_if* out_iface = sr_get_interface(sr, rt_entry->interface);
+
+    if (same_subnet(ip_hdr->ip_dst, out_iface->ip, rt_entry->mask.s_addr)) {
+        /* If its on the same subnet as the found longest prefix then we deliver directly to host*/
+        next_hop_ip = ip_hdr->ip_dst;
+    } else {
+        next_hop_ip = rt_entry->gw.s_addr;
+    } 
+
+    struct sr_arpentry* arp_entry = sr_arpcache_lookup(&sr->cache, next_hop_ip);
+    
+    if (arp_entry) {
+        struct sr_ethernet_hdr* eth_hdr = (struct sr_ethernet_hdr*) packet;
+        memcpy(eth_hdr->ether_shost, out_iface->addr, ETHER_ADDR_LEN);
+        memcpy(eth_hdr->ether_dhost, arp_entry->mac, ETHER_ADDR_LEN);
+
+        sr_send_packet(sr, packet, len, out_iface->name);
+        printf("Successfully forwarded IP packet\n");
+        free(arp_entry);
+    } else {
+        sr_arpcache_queuereq(&sr->cache, next_hop_ip, packet, len, out_iface->name);
+    }
 
 }
 

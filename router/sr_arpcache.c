@@ -18,6 +18,45 @@
 */
 void sr_arpcache_sweepreqs(struct sr_instance *sr) { 
     /* Fill this in */
+    /* This function has to many indents for now may wanna fix it*/
+    struct sr_arpreq *req = sr->cache.requests;
+
+    while (req) {
+        struct sr_arpreq *next_req = req->next; 
+        time_t now = time(NULL);
+
+        if (difftime(now, req->sent) > 1.0) {
+            if (req->times_sent >= 5) {
+                struct sr_packet *pkt = req->packets;
+                while (pkt) {
+                    sr_ip_hdr_t* ip_hdr = (sr_ip_hdr_t*)(pkt->buf + sizeof(struct sr_ethernet_hdr));
+                    /*sr_send_icmp_packet(sr, pkt->buf, pkt->len, pkt->iface, ICMP_DEST_UNREACH, ICMP_HOST_UNREACHABLE); */
+                    printf("ICMP Host Unreachable sent\n");
+                    pkt = pkt->next;
+                }
+                sr_arpreq_destroy(&sr->cache, req);
+            } else {
+                struct sr_if* out_iface = sr_get_interface(sr, req->packets->iface);
+                uint8_t* arp_request_packet = construct_arp_request_packet(out_iface, req->ip);
+                 /* send arp request */
+                if (arp_request_packet) {
+                    if (!sr_send_packet(sr, arp_request_packet, sizeof(struct sr_ethernet_hdr) + sizeof(struct sr_arp_hdr), out_iface->name)) {
+                        printf("Failed to send ARP request packet\n");
+                    } else {
+                        sr_arpcache_queuereq(&sr->cache, req->ip, arp_request_packet, sizeof(struct sr_ethernet_hdr) + sizeof(struct sr_arp_hdr), out_iface->name);
+                        req->sent = now;
+                        req->times_sent++;
+                    }
+                    
+                    free(arp_request_packet);
+                } else {
+                    printf("Failed to construct ARP request packet\n");
+                }
+            }
+        }
+
+        req = next_req; 
+    }
 }
 
 /* You should not need to touch the rest of this code. */
