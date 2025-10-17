@@ -73,6 +73,8 @@
 
 #define SR_ARPCACHE_SZ    100  
 #define SR_ARPCACHE_TO    15.0
+#define SR_ARPCACHE_REQ_TO 1.0
+#define SR_ARPCACHE_MAX_REQ 5
 
 struct sr_packet {
     uint8_t *buf;               /* A raw Ethernet frame, presumably with the dest MAC empty */

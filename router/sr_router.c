@@ -127,6 +127,22 @@ uint8_t* construct_arp_request_packet(struct sr_if* iface, uint32_t target_ip) {
     return packet;
 }
 
+void handle_arp_reply(struct sr_instance* sr,
+        struct sr_arp_hdr* arp_hdr) {  
+
+    struct sr_if *cur_iface = sr->if_list;
+    while (cur_iface) {
+        if (arp_hdr->ar_tip == cur_iface->ip) {
+            sr_arpcache_insert(&(sr->cache), arp_hdr->ar_sha, arp_hdr->ar_sip);
+            printf("Inserted ARP entry\n");
+            return;
+        }
+        cur_iface = cur_iface->next;
+    }
+
+    printf("Ignoring ARP reply not meant for us (target IP: %x)\n", ntohl(arp_hdr->ar_tip));
+}
+
 void handle_arp_packet(struct sr_instance* sr,
         uint8_t * packet/* lent */,
         unsigned int len,
@@ -163,6 +179,7 @@ void handle_arp_packet(struct sr_instance* sr,
         printf("succesfully Sent ARP reply in ARP Request\n");
     } else if (ntohs(arp_hdr->ar_op) == arp_op_reply) {
         printf("Handling ARP reply\n");
+        handle_arp_reply(sr, arp_hdr);
     } else {
         printf("Unknown ARP operation: %d\n", ntohs(arp_hdr->ar_op));
     }
@@ -209,8 +226,8 @@ void forward_ip_packet(struct sr_instance* sr,
         char* interface,/* lent */
         sr_ip_hdr_t* ip_hdr
     ) {
-    /* Forward IP packet */
-
+    
+    /* printf("Forwarding IP packet\n"); */
    
     ip_hdr->ip_ttl -= 1;
     if (ip_hdr->ip_ttl == 0) {
@@ -278,7 +295,7 @@ void handle_ip_packet(struct sr_instance* sr,
         return;
     }   
 
-    printf("IP packet passed checksum validation\n");
+    /* printf("IP packet passed checksum validation\n"); */
 
     if (!is_interface_ip(sr, ip_hdr->ip_dst)) {
         forward_ip_packet(sr, packet, len, interface, ip_hdr);
