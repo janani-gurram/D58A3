@@ -104,6 +104,8 @@ typedef struct sr_icmp_hdr sr_icmp_hdr_t;
 #define PROTOCOL_TCP 6
 #define PROTOCOL_UDP 17
 
+#define ICMP_TTL 64
+
 
 /* Structure of a type3 ICMP header
  */

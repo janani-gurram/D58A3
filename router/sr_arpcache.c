@@ -26,14 +26,10 @@ void sr_arpcache_sweepreqs(struct sr_instance *sr) {
         time_t now = time(NULL);
 
         if (difftime(now, req->sent) > SR_ARPCACHE_REQ_TO) {
+            printf("%d", req->times_sent);
             if (req->times_sent >= SR_ARPCACHE_MAX_REQ) {
                 struct sr_packet *pkt = req->packets;
-                while (pkt) {
-                    sr_ip_hdr_t* ip_hdr = (sr_ip_hdr_t*)(pkt->buf + sizeof(struct sr_ethernet_hdr));
-                    /*sr_send_icmp_packet(sr, pkt->buf, pkt->len, pkt->iface, ICMP_DEST_UNREACH, ICMP_HOST_UNREACHABLE); */
-                    printf("ICMP Host Unreachable sent\n");
-                    pkt = pkt->next;
-                }
+                send_icmp_request(sr, pkt->buf, pkt->iface, ICMP_DEST_UNREACH, ICMP_HOST_UNREACH);
                 sr_arpreq_destroy(&sr->cache, req);
             } else {
                 struct sr_if* out_iface = sr_get_interface(sr, req->packets->iface);
@@ -43,7 +39,6 @@ void sr_arpcache_sweepreqs(struct sr_instance *sr) {
                     if (sr_send_packet(sr, arp_request_packet, sizeof(struct sr_ethernet_hdr) + sizeof(struct sr_arp_hdr), out_iface->name) != 0) {
                         printf("Failed to send ARP request packet\n");
                     } else {
-                        sr_arpcache_queuereq(&sr->cache, req->ip, arp_request_packet, sizeof(struct sr_ethernet_hdr) + sizeof(struct sr_arp_hdr), out_iface->name);
                         req->sent = now;
                         req->times_sent++;
                     }
