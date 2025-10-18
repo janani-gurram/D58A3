@@ -18,6 +18,40 @@
 */
 void sr_arpcache_sweepreqs(struct sr_instance *sr) { 
     /* Fill this in */
+    /* This function has to many indents for now may wanna fix it*/
+    struct sr_arpreq *req = sr->cache.requests;
+
+    while (req) {
+        struct sr_arpreq *next_req = req->next; 
+        time_t now = time(NULL);
+
+        if (difftime(now, req->sent) > SR_ARPCACHE_REQ_TO) {
+            printf("%d", req->times_sent);
+            if (req->times_sent >= SR_ARPCACHE_MAX_REQ) {
+                struct sr_packet *pkt = req->packets;
+                send_icmp_request(sr, pkt->buf, pkt->iface, ICMP_DEST_UNREACH, ICMP_HOST_UNREACH);
+                sr_arpreq_destroy(&sr->cache, req);
+            } else {
+                struct sr_if* out_iface = sr_get_interface(sr, req->packets->iface);
+                uint8_t* arp_request_packet = construct_arp_request_packet(out_iface, req->ip);
+                 /* send arp request */
+                if (arp_request_packet) {
+                    if (sr_send_packet(sr, arp_request_packet, sizeof(struct sr_ethernet_hdr) + sizeof(struct sr_arp_hdr), out_iface->name) != 0) {
+                        printf("Failed to send ARP request packet\n");
+                    } else {
+                        req->sent = now;
+                        req->times_sent++;
+                    }
+                    
+                    free(arp_request_packet);
+                } else {
+                    printf("Failed to construct ARP request packet\n");
+                }
+            }
+        }
+
+        req = next_req; 
+    }
 }
 
 /* You should not need to touch the rest of this code. */
