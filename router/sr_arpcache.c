@@ -51,6 +51,7 @@ void sr_arpcache_sweepreqs(struct sr_instance *sr) {
                         req->sent = now;
                         req->times_sent++;
                     }
+                    
                     free(arp_request_packet);
                 } else {
                     printf("Failed to construct ARP request packet\n");
