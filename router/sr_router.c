@@ -180,7 +180,7 @@ void send_icmp_request(
 
     sr_ethernet_hdr_t* old_eth_hdr = (sr_ethernet_hdr_t*)packet;
     sr_ip_hdr_t* old_ip_hdr = (sr_ip_hdr_t*)(packet + sizeof(sr_ethernet_hdr_t));
-    unsigned int icmp_payload_len = sizeof(sr_icmp_hdr_t);
+    unsigned int icmp_payload_len = ntohs(old_ip_hdr->ip_len) - (old_ip_hdr->ip_hl * 4);
 
     if (type != ICMP_ECHO_REPLY) {
       icmp_payload_len = sizeof(sr_icmp_t3_hdr_t);  
@@ -218,7 +218,11 @@ void send_icmp_request(
     ip_hdr->ip_sum = cksum((uint16_t*)ip_hdr, sizeof(sr_ip_hdr_t));
 
     if (type == ICMP_ECHO_REPLY) {
-        sr_icmp_hdr_t* icmp_hdr = (sr_icmp_hdr_t*)(icmp_packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+        /* copy old icmp packet into new */
+        uint8_t* icmp_payload = icmp_packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t);
+        memcpy(icmp_payload, (uint8_t*)old_ip_hdr + (old_ip_hdr->ip_hl * 4), icmp_payload_len);
+
+        sr_icmp_hdr_t* icmp_hdr = (sr_icmp_hdr_t*)(icmp_payload);
         icmp_hdr->icmp_type = type;
         icmp_hdr->icmp_code = code;
         icmp_hdr->icmp_sum = 0;
@@ -420,7 +424,7 @@ void handle_ip_packet(struct sr_instance* sr,
 
         /* we only need to reply to ICMP Echo Requests (type 8, code 0) */
         sr_icmp_hdr_t* icmp_hdr = (sr_icmp_hdr_t*)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
-        if (!(icmp_hdr->icmp_type == 8 && icmp_hdr->icmp_code == 0)) {
+        if (icmp_hdr->icmp_type != 8 || icmp_hdr->icmp_code != 0) {
             printf("Not an ICMP Echo Request, ignoring\n");
             return;
         }
