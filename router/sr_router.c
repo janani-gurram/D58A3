@@ -194,11 +194,14 @@ void send_icmp_request(
         return;
     }
 
+    /* construct new ethernet header */
+    /* we set the source to our interface and the destination to the original sender */
     sr_ethernet_hdr_t* new_eth_hdr = (sr_ethernet_hdr_t*)icmp_packet;
     memcpy(new_eth_hdr->ether_dhost, old_eth_hdr->ether_shost, ETHER_ADDR_LEN);
     memcpy(new_eth_hdr->ether_shost, iface->addr, ETHER_ADDR_LEN);
     new_eth_hdr->ether_type = htons(ethertype_ip);
 
+    /* construct new IP header */
     sr_ip_hdr_t* ip_hdr = (sr_ip_hdr_t*)(icmp_packet + sizeof(sr_ethernet_hdr_t));
     ip_hdr->ip_v = 4;
     ip_hdr->ip_hl = 5;
@@ -321,45 +324,58 @@ void forward_ip_packet(struct sr_instance* sr,
     ) {
     
     /* printf("Forwarding IP packet\n"); */
-   
+
+    /* decrement the ttl since we are forwarding the packet */
     ip_hdr->ip_ttl -= 1;
-    if (ip_hdr->ip_ttl == 0) {
+    /* if the ttl is 0, we discard the packet and send an ICMP Time Exceeded message */
+    if (ip_hdr->ip_ttl == ICMP_TTL_EXPIRED) {
         printf("TTL expired, need to send ICMP Time Exceeded\n");
         send_icmp_request(sr, packet, interface, ICMP_TIME_EXCEEDED, ICMP_TTL_EXPIRED);
         return;
     }
  
+    /* recompute the IP checksum */
     ip_hdr->ip_sum = 0;
     ip_hdr->ip_sum = cksum((uint16_t*)ip_hdr, ip_hdr->ip_hl * 4);
+    /* find the longest prefix match in the routing table */
     struct sr_rt* rt_entry = longest_prefix_match(sr, ip_hdr->ip_dst);
 
+    /* if we can't find a matching route, we send an ICMP Net Unreachable */
     if (!rt_entry) {
         printf("No matching route, need to send ICMP Net Unreachable\n");
         send_icmp_request(sr, packet, interface, ICMP_DEST_UNREACH, ICMP_NET_UNREACH);
         return;
     }
 
+    /* determine the next hop IP address */
     uint32_t next_hop_ip;
     struct sr_if* out_iface = sr_get_interface(sr, rt_entry->interface);
 
     if (same_subnet(ip_hdr->ip_dst, out_iface->ip, rt_entry->mask.s_addr)) {
-        /* If its on the same subnet as the found longest prefix then we deliver directly to host*/
+        /* if its on the same subnet as the found longest prefix then we deliver directly to host */
         next_hop_ip = ip_hdr->ip_dst;
     } else {
+        /* if it's not on the same subnet, we use the gateway */
         next_hop_ip = rt_entry->gw.s_addr;
     } 
 
+    /* check the ARP cache for the next hop IP */
     struct sr_arpentry* arp_entry = sr_arpcache_lookup(&sr->cache, next_hop_ip);
     print_addr_ip_int(next_hop_ip);
+    /* If we found an ARP entry, we can send the packet */
     if (arp_entry) {
         struct sr_ethernet_hdr* eth_hdr = (struct sr_ethernet_hdr*) packet;
+        /* set source mac address to router interface mac */
         memcpy(eth_hdr->ether_shost, out_iface->addr, ETHER_ADDR_LEN);
+        /* set destination mac address to ARP entry mac */
         memcpy(eth_hdr->ether_dhost, arp_entry->mac, ETHER_ADDR_LEN);
+
         printf("Found ARP entry in cache, sending packet\n");
-        
         print_hdr_ip((uint8_t*)ip_hdr);
+
         sr_send_packet(sr, packet, len, out_iface->name);
         free(arp_entry);
+    /* otherwise, we need to queue the packet for later */
     } else {
         printf("No ARP entry found, queuing ARP request\n");
         sr_arpcache_queuereq(&sr->cache, next_hop_ip, packet, len, out_iface->name);
@@ -371,8 +387,8 @@ void handle_ip_packet(struct sr_instance* sr,
         uint8_t * packet/* lent */,
         unsigned int len,
         char* interface/* lent */) {
-    /* Handle IP packet */
     
+    /* validate checksum */
     sr_ip_hdr_t* ip_hdr = (sr_ip_hdr_t*)(packet + sizeof(struct sr_ethernet_hdr));
     uint16_t received_sum = ntohs(ip_hdr->ip_sum);
     int ip_header_len = ip_hdr->ip_hl * 4;
@@ -391,14 +407,34 @@ void handle_ip_packet(struct sr_instance* sr,
 
     /* printf("IP packet passed checksum validation\n"); */
 
+    /* if the destination ip is not one of the router's interfaces */
     if (!is_interface_ip(sr, ip_hdr->ip_dst)) {
         forward_ip_packet(sr, packet, len, interface, ip_hdr);
         return;
     }
 
+    /* otherwise, the packet is for the router itself */
+    /* if the protocol is ICMP */
     if (ip_hdr->ip_p == ip_protocol_icmp) {
         printf("ICMP Echo Request received\n");
-        /* Not sure if the code matters here */
+
+        /* we only need to reply to ICMP Echo Requests (type 8, code 0) */
+        sr_icmp_hdr_t* icmp_hdr = (sr_icmp_hdr_t*)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+        if (icmp_hdr->icmp_type != 8 && icmp_hdr->icmp_code != 0) {
+            printf("Not an ICMP Echo Request, ignoring\n");
+            return;
+        }
+
+        /* validate the checksum of the icmp header before sending reply */
+        uint16_t received_sum = ntohs(icmp_hdr->icmp_sum);
+        icmp_hdr->icmp_sum = 0;
+        icmp_hdr->icmp_sum = cksum((uint16_t*)icmp_hdr, sizeof(sr_icmp_hdr_t));
+        if (received_sum != ntohs(icmp_hdr->icmp_sum)) {
+            printf("Invalid ICMP checksum\n");
+            return;
+        }
+
+        /* send ICMP Echo Reply */
         send_icmp_request(sr, packet, interface, ICMP_ECHO_REPLY, 0);
     }
     else if (ip_hdr->ip_p == PROTOCOL_TCP || ip_hdr->ip_p == PROTOCOL_UDP) {
@@ -419,7 +455,7 @@ void sr_handlepacket(struct sr_instance* sr,
   assert(packet);
   assert(interface);
 
-  printf("*** -> Received packet of length %d \n",len);
+  printf("*** -> Received packet of length %d \n", len);
 
   sr_ethernet_hdr_t* eth_hdr = (sr_ethernet_hdr_t*) packet;
   uint16_t type = ntohs(eth_hdr->ether_type);
@@ -427,7 +463,6 @@ void sr_handlepacket(struct sr_instance* sr,
   switch(type) {
       case ethertype_arp:
           printf("Received ARP packet\n");
-          /* trying to find the truth  */
           /* handle ARP */
           handle_arp_packet(sr, packet, len, interface);
           break;
@@ -440,10 +475,6 @@ void sr_handlepacket(struct sr_instance* sr,
           printf("Received packet of unknown type %d\n", type);
           return;
   }
-
-
-
-  /* fill in code here */
 
 }/* end sr_ForwardPacket */
 
