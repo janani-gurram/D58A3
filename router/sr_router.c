@@ -434,6 +434,7 @@ void handle_ip_packet(struct sr_instance* sr,
             printf("Invalid ICMP checksum\n");
             return;
         }
+        printf("ICMP checksum valid, sending Echo Reply\n");
 
         /* send ICMP Echo Reply */
         send_icmp_request(sr, packet, interface, ICMP_ECHO_REPLY, 0);
