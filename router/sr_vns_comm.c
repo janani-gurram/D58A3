@@ -602,7 +602,7 @@ int sr_send_packet(struct sr_instance* sr /* borrowed */,
         free(sr_pkt);
         return -1;
     }
-    printf("Sent packet of length %d on interface %s\n from ip", len, iface);
+    printf("Sent packet of length %d on interface %s\n", len, iface);
     free(sr_pkt);
 
     return 0;

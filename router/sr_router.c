@@ -420,16 +420,17 @@ void handle_ip_packet(struct sr_instance* sr,
 
         /* we only need to reply to ICMP Echo Requests (type 8, code 0) */
         sr_icmp_hdr_t* icmp_hdr = (sr_icmp_hdr_t*)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
-        if (icmp_hdr->icmp_type != 8 && icmp_hdr->icmp_code != 0) {
+        if (!(icmp_hdr->icmp_type == 8 && icmp_hdr->icmp_code == 0)) {
             printf("Not an ICMP Echo Request, ignoring\n");
             return;
         }
 
-        /* validate the checksum of the icmp header before sending reply */
-        uint16_t received_sum = ntohs(icmp_hdr->icmp_sum);
+        /* validate the checksum of the icmp packet before sending reply */
+        unsigned int icmp_len = ntohs(ip_hdr->ip_len) - ip_header_len;
+        uint16_t received_icmp_sum = icmp_hdr->icmp_sum;
         icmp_hdr->icmp_sum = 0;
-        icmp_hdr->icmp_sum = cksum((uint16_t*)icmp_hdr, sizeof(sr_icmp_hdr_t));
-        if (received_sum != ntohs(icmp_hdr->icmp_sum)) {
+        uint16_t computed_sum = cksum((uint16_t*)icmp_hdr, icmp_len);
+        if (received_icmp_sum != computed_sum) {
             printf("Invalid ICMP checksum\n");
             return;
         }
@@ -438,7 +439,7 @@ void handle_ip_packet(struct sr_instance* sr,
         send_icmp_request(sr, packet, interface, ICMP_ECHO_REPLY, 0);
     }
     else if (ip_hdr->ip_p == PROTOCOL_TCP || ip_hdr->ip_p == PROTOCOL_UDP) {
-        printf("TCP/UDP packet received for us, need to send ICMP Port Unreachable\n");
+        printf("TCP/UDP packet received for router, need to reply with ICMP Port Unreachable\n");
         send_icmp_request(sr, packet, interface, ICMP_DEST_UNREACH, ICMP_PORT_UNREACH);
     }
 
@@ -455,7 +456,7 @@ void sr_handlepacket(struct sr_instance* sr,
   assert(packet);
   assert(interface);
 
-  printf("*** -> Received packet of length %d \n", len);
+  printf("*** -> Received packet of length %d\n", len);
 
   sr_ethernet_hdr_t* eth_hdr = (sr_ethernet_hdr_t*) packet;
   uint16_t type = ntohs(eth_hdr->ether_type);
