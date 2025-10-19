@@ -21,25 +21,25 @@ void sr_arpcache_sweepreqs(struct sr_instance *sr) {
     /* This function has to many indents for now may wanna fix it*/
     struct sr_arpreq *req = sr->cache.requests;
 
-    
-    // traverse the linked list of ARP requests
+
+    /* traverse the linked list of ARP requests */
     while (req) {
         struct sr_arpreq *next_req = req->next; 
         time_t now = time(NULL);
 
-        // if it has been more than SR_ARPCACHE_REQ_TO seconds since last req sent
+        /* if it has been more than SR_ARPCACHE_REQ_TO seconds since last req sent */
         if (difftime(now, req->sent) > SR_ARPCACHE_REQ_TO) {
             printf("%d", req->times_sent);
-            // and we have sent it SR_ARPCACHE_MAX_REQ times already
+            /* and we have sent it SR_ARPCACHE_MAX_REQ times already */
             if (req->times_sent >= SR_ARPCACHE_MAX_REQ) {
-                // send ICMP host unreachable to all packets waiting on this request
+                /* send ICMP host unreachable to all packets waiting on this request */
                 struct sr_packet *pkt = req->packets;
                 while (pkt) {
                     send_icmp_request(sr, pkt->buf, pkt->iface, ICMP_DEST_UNREACH, ICMP_HOST_UNREACH);
                     pkt = pkt->next;
                 }
                 sr_arpreq_destroy(&sr->cache, req);
-            // otherwise, send another ARP request
+            /* otherwise, send another ARP request */
             } else {
                 struct sr_if* out_iface = sr_get_interface(sr, req->packets->iface);
                 uint8_t* arp_request_packet = construct_arp_request_packet(out_iface, req->ip);
